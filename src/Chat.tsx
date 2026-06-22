@@ -10,7 +10,7 @@ import { runShell, isTauri } from "./shellExec";
 import ToolCallCard from "./ToolCallCard";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL = "qwen/qwen3.6-27b";
+const MODEL = "llama-3.3-70b-versatile";
 const API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const MAX_FULL = 50 * 1024;
 const MAX_AGENT_ITERATIONS = 12;
@@ -71,6 +71,18 @@ function buildToolResultBlock(tc: ToolCall): string {
   return `[TOOL_RESULT: ${tc.id}]\ncommand: ${cmd}\nexit_code: ${tc.exitCode}\nduration_ms: ${tc.durationMs}\noutput:\n${truncated}\n[/TOOL_RESULT]`;
 }
 
+function trimHistoryForApi(history: import("./types").Msg[]): import("./types").Msg[] {
+  // Keep last ~20 messages. If tool outputs are huge, summarize older ones.
+  if (history.length <= 20) return history;
+  const tail = history.slice(-18);
+  const head = history.slice(0, history.length - 18);
+  const summary: import("./types").Msg = {
+    role: "user",
+    content: `[CONTEXT SUMMARY] Earlier in this session: ${head.length} messages (${head.filter(m => m.role === "user").length} operator inputs, ${head.filter(m => m.role === "assistant").length} agent responses, ${head.filter(m => m.role === "tool").length} tool results). Continuing from there.`,
+  };
+  return [summary, ...tail];
+}
+
 type Props = {
   messages: Msg[];
   onMessagesChange: (msgs: Msg[]) => void;
@@ -125,7 +137,8 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
 
   const removeAttachment = (idx: number) => { setPendingAtts(prev => prev.filter((_, i) => i !== idx)); };
 
-  function buildApiMessages(history: Msg[]): { role: string; content: string }[] {
+  function buildApiMessages(historyRaw: Msg[]): { role: string; content: string }[] {
+    const history = trimHistoryForApi(historyRaw);
     const sysPrompt = sessionMode === "agent"
       ? `${persona.systemPrompt}\n\n--- AGENT MODE ACTIVE ---\n${AGENT_TOOL_SPEC}`
       : persona.systemPrompt;
@@ -153,7 +166,20 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
       body: JSON.stringify({ model: MODEL, messages: buildApiMessages(history), stream: true, temperature: 0.4, max_tokens: 4096 }),
     });
-    if (!res.ok) { const errText = await res.text(); throw new Error(`Groq ${res.status}: ${errText}`); }
+    if (!res.ok) {
+      const errText = await res.text();
+      if (res.status === 429) {
+        let waitMsg = "";
+        try {
+          const errJson = JSON.parse(errText);
+          const msg = errJson?.error?.message || "";
+          const m = msg.match(/try again in ([\d.]+)s/);
+          if (m) waitMsg = ` Wait ${Math.ceil(parseFloat(m[1]))}s then retry.`;
+        } catch {}
+        throw new Error(`[rate limit] Groq free tier TPM exceeded.${waitMsg} Either wait, upgrade to Dev tier, or switch model.`);
+      }
+      throw new Error(`Groq ${res.status}: ${errText}`);
+    }
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -373,7 +399,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
         {messages.length === 0 && (
           <div className="empty">
             <div className="empty-title">CONTROL FREAK ONLINE</div>
-            <div className="empty-sub">Brain: Qwen3.6 · Mode: {sessionMode.toUpperCase()} · Persona: {persona.name}</div>
+            <div className="empty-sub">Brain: Llama 3.3 70B · Mode: {sessionMode.toUpperCase()} · Persona: {persona.name}</div>
             <div className="empty-prompt">
               {sessionMode === "agent" ? "State the objective. Agent will plan and propose commands." : "State the objective. Drop files anywhere."}
             </div>
