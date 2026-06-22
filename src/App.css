@@ -1138,3 +1138,186 @@ html, body, #root {
   background: #ff5555;
   box-shadow: 0 0 12px #ff2d2d66;
 }
+
+/* ─── Agent mode pill ─── */
+.mode-pill {
+  background: #1a0808;
+  border: 1px solid #2a0808;
+  color: #888;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+  font-weight: 700;
+  transition: all 0.15s;
+}
+.mode-pill.mode-chat {
+  color: #888;
+}
+.mode-pill.mode-agent {
+  color: #ff2d2d;
+  border-color: #ff2d2d;
+  background: #2a0808;
+  box-shadow: 0 0 10px #ff2d2d44;
+}
+.mode-pill:hover {
+  border-color: #ff2d2d;
+  color: #ff5555;
+}
+
+/* ─── Agent warning banner ─── */
+.agent-warn {
+  padding: 10px 22px;
+  background: #2a1a00;
+  border-bottom: 1px solid #4a2f00;
+  color: #ffb84a;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Tool call card ─── */
+.tc-card {
+  margin: 12px 0;
+  background: #0a0505;
+  border: 1px solid #2a0808;
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+}
+.tc-card.tc-risk-low { border-left: 3px solid #4ade80; }
+.tc-card.tc-risk-medium { border-left: 3px solid #facc15; }
+.tc-card.tc-risk-high { border-left: 3px solid #ff2d2d; box-shadow: 0 0 16px #ff2d2d33; }
+
+.tc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: #100808;
+  border-bottom: 1px solid #1a0606;
+  font-size: 10.5px;
+  letter-spacing: 1px;
+  flex-wrap: wrap;
+}
+.tc-tool { color: #ff8080; font-weight: 700; letter-spacing: 1.5px; }
+.tc-shell { color: #888; }
+.tc-risk { padding: 2px 7px; border: 1px solid; border-radius: 2px; font-weight: 700; font-size: 9.5px; }
+.tc-timeout { color: #666; }
+.tc-state { margin-left: auto; font-size: 10.5px; }
+.tc-state-tag-pending { color: #facc15; }
+.tc-state-tag-edited { color: #facc15; }
+.tc-state-tag-approved { color: #4ade80; }
+.tc-state-tag-executing { color: #4ade80; animation: pulse 1.2s ease-in-out infinite; }
+.tc-state-tag-completed { color: #4ade80; }
+.tc-state-tag-failed { color: #ff2d2d; }
+.tc-state-tag-denied { color: #666; }
+
+.tc-reason {
+  padding: 10px 14px;
+  color: #ccc;
+  font-size: 12px;
+  font-style: italic;
+  border-bottom: 1px solid #1a0606;
+  background: #08040406;
+}
+
+.tc-cmd-block {
+  padding: 10px 14px;
+  background: #050202;
+  border-bottom: 1px solid #1a0606;
+}
+.tc-cmd {
+  margin: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  color: #ff8080;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+.tc-cmd-edit {
+  width: 100%;
+  background: #0d0303;
+  border: 1px solid #ff2d2d;
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+  border-radius: 2px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.tc-actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+}
+.tc-btn {
+  background: transparent;
+  border: 1px solid #2a0808;
+  color: #888;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 1.5px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-radius: 2px;
+  font-weight: 700;
+  transition: all 0.15s;
+}
+.tc-approve {
+  background: #4ade80;
+  color: #050505;
+  border-color: #4ade80;
+}
+.tc-approve:hover { background: #6ee49a; box-shadow: 0 0 10px #4ade8055; }
+.tc-edit:hover { border-color: #facc15; color: #facc15; }
+.tc-deny:hover { background: #ff2d2d; color: #050505; border-color: #ff2d2d; }
+.tc-cancel:hover { border-color: #888; color: #fff; }
+
+.tc-executing {
+  padding: 12px 14px;
+  color: #4ade80;
+  font-size: 11.5px;
+  letter-spacing: 1px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.tc-output-wrap {
+  border-top: 1px solid #1a0606;
+}
+.tc-output-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 14px;
+  background: #100808;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #888;
+}
+.tc-duration { color: #666; }
+.tc-output {
+  margin: 0;
+  padding: 12px 14px;
+  background: #050202;
+  color: #ccc;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.tc-denied-msg {
+  padding: 10px 14px;
+  color: #888;
+  font-size: 11.5px;
+  font-style: italic;
+}

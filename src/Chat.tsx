@@ -3,12 +3,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { atomDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { Msg, Attachment, Persona } from "./types";
+import type { Msg, Attachment, Persona, ToolCall, SessionMode } from "./types";
+import { extractToolCall } from "./parseToolCall";
+import { AGENT_TOOL_SPEC } from "./agentPrompt";
+import { runShell, isTauri } from "./shellExec";
+import ToolCallCard from "./ToolCallCard";
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL = "qwen/qwen3.6-27b";
 const API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const MAX_FULL = 50 * 1024;
+const MAX_AGENT_ITERATIONS = 12;
 const ACCEPT = ".txt,.xml,.json,.csv,.log,.py,.sh,.ps1,.md,.html,.conf,.yaml,.yml,.ini,.toml,.js,.ts,.tsx,.jsx,.css,.sql,.rb,.go,.rs,.c,.cpp,.h,.java,.php,.env,text/*";
 
 function CodeBlock({ language, value }: { language: string; value: string }) {
@@ -57,21 +62,37 @@ function buildAttachmentBlock(atts: Attachment[]): string {
   }).join("\n\n");
 }
 
+function buildToolResultBlock(tc: ToolCall): string {
+  const cmd = tc.editedCommand || tc.command;
+  if (tc.approvalState === "denied") {
+    return `[TOOL_RESULT: ${tc.id}]\ncommand: ${cmd}\nstatus: DENIED by operator. Do not retry the same command. Adjust your plan.\n[/TOOL_RESULT]`;
+  }
+  const truncated = (tc.output || "").length > 8000 ? `${(tc.output || "").slice(0, 8000)}\n...(truncated, total ${(tc.output || "").length} chars)` : (tc.output || "");
+  return `[TOOL_RESULT: ${tc.id}]\ncommand: ${cmd}\nexit_code: ${tc.exitCode}\nduration_ms: ${tc.durationMs}\noutput:\n${truncated}\n[/TOOL_RESULT]`;
+}
+
 type Props = {
   messages: Msg[];
   onMessagesChange: (msgs: Msg[]) => void;
   sessionName: string;
+  sessionMode: SessionMode;
   persona: Persona;
   onOpenPersonas: () => void;
+  onToggleMode: () => void;
 };
 
-export default function Chat({ messages, onMessagesChange, sessionName, persona, onOpenPersonas }: Props) {
+export default function Chat({ messages, onMessagesChange, sessionName, sessionMode, persona, onOpenPersonas, onToggleMode }: Props) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
+  const [tauriDetected, setTauriDetected] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoScrollRef = useRef(true);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  useEffect(() => { isTauri().then(setTauriDetected); }, []);
 
   useEffect(() => {
     if (autoScrollRef.current && scrollRef.current) {
@@ -104,74 +125,217 @@ export default function Chat({ messages, onMessagesChange, sessionName, persona,
 
   const removeAttachment = (idx: number) => { setPendingAtts(prev => prev.filter((_, i) => i !== idx)); };
 
+  function buildApiMessages(history: Msg[]): { role: string; content: string }[] {
+    const sysPrompt = sessionMode === "agent"
+      ? `${persona.systemPrompt}\n\n--- AGENT MODE ACTIVE ---\n${AGENT_TOOL_SPEC}`
+      : persona.systemPrompt;
+    const apiMsgs: { role: string; content: string }[] = [{ role: "system", content: sysPrompt }];
+    for (const m of history) {
+      if (m.role === "user") {
+        const att = m.attachments && m.attachments.length > 0 ? `\n\n${buildAttachmentBlock(m.attachments)}` : "";
+        apiMsgs.push({ role: "user", content: `${m.content}${att}`.trim() });
+      } else if (m.role === "assistant") {
+        let content = m.content || "";
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          content += "\n\n" + m.toolCalls.map(tc => `<tool_call>\n${JSON.stringify({ tool: tc.tool, command: tc.editedCommand || tc.command, reason: tc.reason, risk: tc.risk, shell: tc.shell, timeout_sec: tc.timeoutSec }, null, 2)}\n</tool_call>`).join("\n\n");
+        }
+        apiMsgs.push({ role: "assistant", content });
+      } else if (m.role === "tool") {
+        apiMsgs.push({ role: "user", content: m.content });
+      }
+    }
+    return apiMsgs;
+  }
+
+  async function streamOnce(history: Msg[]): Promise<{ text: string; toolCall: ToolCall | null }> {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
+      body: JSON.stringify({ model: MODEL, messages: buildApiMessages(history), stream: true, temperature: 0.4, max_tokens: 4096 }),
+    });
+    if (!res.ok) { const errText = await res.text(); throw new Error(`Groq ${res.status}: ${errText}`); }
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let assistantText = "";
+    let lastEmittedVisible = "";
+
+    const placeholderIdx = history.length;
+    onMessagesChange([...history, { role: "assistant", content: "" }]);
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === "[DONE]") continue;
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta?.content;
+          if (delta) {
+            assistantText += delta;
+            const visible = assistantText
+              .replace(/<think>[\s\S]*?<\/think>/g, "")
+              .replace(/<think>[\s\S]*$/g, "")
+              .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+              .replace(/<tool_call>[\s\S]*$/g, "")
+              .trim();
+            if (visible !== lastEmittedVisible) {
+              lastEmittedVisible = visible;
+              const updated = [...history];
+              updated[placeholderIdx] = { role: "assistant", content: visible };
+              onMessagesChange(updated);
+            }
+          }
+        } catch {}
+      }
+    }
+
+    const cleanedThink = assistantText.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const { before, toolCall } = extractToolCall(cleanedThink);
+    const finalVisible = before.trim();
+
+    let parsedTC: ToolCall | null = null;
+    if (toolCall && toolCall.command) {
+      parsedTC = {
+        id: toolCall.id!,
+        tool: "run_shell",
+        command: toolCall.command!,
+        reason: toolCall.reason || "",
+        risk: toolCall.risk || "medium",
+        shell: toolCall.shell || "powershell",
+        timeoutSec: toolCall.timeoutSec || 60,
+        approvalState: "pending",
+      };
+    }
+
+    return { text: finalVisible, toolCall: parsedTC };
+  }
+
   const send = async () => {
     const text = input.trim();
     if ((!text && pendingAtts.length === 0) || streaming) return;
     if (!API_KEY) {
-      onMessagesChange([...messages, { role: "user", content: text }, { role: "assistant", content: "[error] VITE_GROQ_API_KEY missing in .env.local — set it and restart the dev server." }]);
-      setInput("");
-      return;
+      onMessagesChange([...messages, { role: "user", content: text }, { role: "assistant", content: "[error] VITE_GROQ_API_KEY missing in .env.local — set it and restart." }]);
+      setInput(""); return;
     }
 
     const userMsg: Msg = { role: "user", content: text, attachments: pendingAtts.length > 0 ? pendingAtts : undefined };
-    const newMessages: Msg[] = [...messages, userMsg];
-    onMessagesChange([...newMessages, { role: "assistant", content: "" }]);
+    let history: Msg[] = [...messages, userMsg];
+    onMessagesChange(history);
     setInput("");
     setPendingAtts([]);
     setStreaming(true);
     autoScrollRef.current = true;
 
-    const apiMessages = [
-      { role: "system", content: persona.systemPrompt },
-      ...newMessages.map(m => {
-        if (m.role === "user" && m.attachments && m.attachments.length > 0) {
-          return { role: "user", content: `${m.content}\n\n${buildAttachmentBlock(m.attachments)}`.trim() };
-        }
-        return { role: m.role, content: m.content };
-      })
-    ];
-
     try {
-      const res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
-        body: JSON.stringify({ model: MODEL, messages: apiMessages, stream: true, temperature: 0.5, max_tokens: 4096 }),
-      });
-      if (!res.ok) { const errText = await res.text(); throw new Error(`Groq ${res.status}: ${errText}`); }
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let assistantText = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data:")) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === "[DONE]") continue;
-          try {
-            const json = JSON.parse(data);
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) {
-              assistantText += delta;
-              const visible = assistantText
-                .replace(/<think>[\s\S]*?<\/think>/g, "")
-                .replace(/<think>[\s\S]*$/g, "")
-                .trimStart();
-              onMessagesChange([...newMessages, { role: "assistant", content: visible }]);
-            }
-          } catch {}
-        }
-      }
+      const { text: replyText, toolCall } = await streamOnce(history);
+      const assistantMsg: Msg = { role: "assistant", content: replyText, toolCalls: toolCall ? [toolCall] : undefined };
+      history = [...history, assistantMsg];
+      onMessagesChange(history);
     } catch (e: any) {
-      onMessagesChange([...newMessages, { role: "assistant", content: `[error] ${e.message}` }]);
+      onMessagesChange([...messagesRef.current.slice(0, -1), { role: "assistant", content: `[error] ${e.message}` }]);
     } finally {
       setStreaming(false);
     }
+  };
+
+  async function executeToolCall(messageIdx: number, toolCallId: string, editedCommand?: string) {
+    const current = messagesRef.current;
+    const msg = current[messageIdx];
+    if (!msg || !msg.toolCalls) return;
+    const tcIdx = msg.toolCalls.findIndex(t => t.id === toolCallId);
+    if (tcIdx === -1) return;
+
+    const updateTC = (patch: Partial<ToolCall>) => {
+      const fresh = [...messagesRef.current];
+      const m = { ...fresh[messageIdx] };
+      if (!m.toolCalls) return;
+      const newTcs = [...m.toolCalls];
+      newTcs[tcIdx] = { ...newTcs[tcIdx], ...patch };
+      m.toolCalls = newTcs;
+      fresh[messageIdx] = m;
+      onMessagesChange(fresh);
+    };
+
+    updateTC({ approvalState: "executing", editedCommand: editedCommand || undefined, startedAt: Date.now() });
+
+    const tc = msg.toolCalls[tcIdx];
+    const cmd = editedCommand || tc.command;
+    const result = await runShell(cmd, tc.shell, tc.timeoutSec);
+
+    updateTC({
+      approvalState: result.exitCode === 0 ? "completed" : "failed",
+      output: result.output,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      completedAt: Date.now(),
+    });
+
+    // After execution, feed result back to model for next step
+    const updatedAfter = messagesRef.current;
+    const finalTC = updatedAfter[messageIdx].toolCalls![tcIdx];
+    const toolResultMsg: Msg = { role: "tool", content: buildToolResultBlock(finalTC) };
+    let history: Msg[] = [...updatedAfter, toolResultMsg];
+    onMessagesChange(history);
+
+    // Continue the agent loop (up to N iterations to prevent runaway)
+    setStreaming(true);
+    try {
+      let iterations = 0;
+      while (iterations < MAX_AGENT_ITERATIONS) {
+        iterations++;
+        const { text: replyText, toolCall: nextTC } = await streamOnce(history);
+        const assistantMsg: Msg = { role: "assistant", content: replyText, toolCalls: nextTC ? [nextTC] : undefined };
+        history = [...history, assistantMsg];
+        onMessagesChange(history);
+        if (!nextTC) break; // model is done or asking operator
+        break; // wait for operator approval on next call (don't auto-run)
+      }
+    } catch (e: any) {
+      onMessagesChange([...messagesRef.current, { role: "assistant", content: `[error] ${e.message}` }]);
+    } finally {
+      setStreaming(false);
+    }
+  }
+
+  const approveCall = (messageIdx: number) => (toolCallId: string, editedCommand?: string) => {
+    executeToolCall(messageIdx, toolCallId, editedCommand);
+  };
+
+  const denyCall = (messageIdx: number) => (toolCallId: string) => {
+    const current = messagesRef.current;
+    const msg = current[messageIdx];
+    if (!msg || !msg.toolCalls) return;
+    const tcIdx = msg.toolCalls.findIndex(t => t.id === toolCallId);
+    if (tcIdx === -1) return;
+
+    const fresh = [...current];
+    const m = { ...fresh[messageIdx] };
+    const newTcs = [...m.toolCalls!];
+    newTcs[tcIdx] = { ...newTcs[tcIdx], approvalState: "denied" };
+    m.toolCalls = newTcs;
+    fresh[messageIdx] = m;
+
+    // Tell the model it was denied so it adjusts
+    const deniedTC = newTcs[tcIdx];
+    const toolResultMsg: Msg = { role: "tool", content: buildToolResultBlock(deniedTC) };
+    const history: Msg[] = [...fresh, toolResultMsg];
+    onMessagesChange(history);
+
+    setStreaming(true);
+    streamOnce(history)
+      .then(({ text: replyText, toolCall: nextTC }) => {
+        const assistantMsg: Msg = { role: "assistant", content: replyText, toolCalls: nextTC ? [nextTC] : undefined };
+        onMessagesChange([...history, assistantMsg]);
+      })
+      .catch((e: any) => onMessagesChange([...history, { role: "assistant", content: `[error] ${e.message}` }]))
+      .finally(() => setStreaming(false));
   };
 
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -180,49 +344,79 @@ export default function Chat({ messages, onMessagesChange, sessionName, persona,
 
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); handleFiles(e.dataTransfer.files); };
 
+  const agentBanner = sessionMode === "agent" && !tauriDetected ? (
+    <div className="agent-warn">
+      ⚠ AGENT MODE requires the desktop build. In browser preview, the agent can propose commands but cannot execute them.
+    </div>
+  ) : null;
+
   return (
     <div className="chat" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <div className="chat-head">
         <span className="chat-session-name">{sessionName}</span>
+        <button
+          className={`mode-pill mode-${sessionMode}`}
+          onClick={onToggleMode}
+          title={sessionMode === "agent" ? "Switch to chat mode" : "Switch to agent mode"}
+        >
+          {sessionMode === "agent" ? "● AGENT" : "● CHAT"}
+        </button>
         <button className="persona-pill" onClick={onOpenPersonas} title="Change persona">
           <span className="pill-dot">●</span> {persona.name}
         </button>
         <span className="chat-status">{streaming ? "● transmitting" : "● standby"}</span>
       </div>
 
+      {agentBanner}
+
       <div className="messages" ref={scrollRef} onScroll={onScroll}>
         {messages.length === 0 && (
           <div className="empty">
             <div className="empty-title">CONTROL FREAK ONLINE</div>
-            <div className="empty-sub">Brain: Llama 3.3 70B · Persona: {persona.name} · Auth: operator verified</div>
-            <div className="empty-prompt">State the objective. Drop files anywhere.</div>
-          </div>
-        )}
-        {messages.map((m, i) => (
-          <div key={i} className={`msg msg-${m.role}`}>
-            <div className="role">{m.role === "user" ? "OPERATOR" : "CONTROL FREAK"}</div>
-            <div className="content">
-              {m.role === "user" ? (
-                <>
-                  {m.content && <pre className="user-text">{m.content}</pre>}
-                  {m.attachments && m.attachments.length > 0 && (
-                    <div className="att-list">
-                      {m.attachments.map((a, j) => (
-                        <div key={j} className="att-chip">
-                          <span className="att-icon">▤</span>
-                          <span className="att-name">{a.name}</span>
-                          <span className="att-size">{formatBytes(a.size)}{a.truncated ? " · truncated" : ""}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <Markdown content={m.content || "..."} />
-              )}
+            <div className="empty-sub">Brain: Qwen3.6 · Mode: {sessionMode.toUpperCase()} · Persona: {persona.name}</div>
+            <div className="empty-prompt">
+              {sessionMode === "agent" ? "State the objective. Agent will plan and propose commands." : "State the objective. Drop files anywhere."}
             </div>
           </div>
-        ))}
+        )}
+        {messages.map((m, i) => {
+          if (m.role === "tool") return null; // tool results are not shown directly (they're in the toolCall card)
+          return (
+            <div key={i} className={`msg msg-${m.role}`}>
+              <div className="role">{m.role === "user" ? "OPERATOR" : "CONTROL FREAK"}</div>
+              <div className="content">
+                {m.role === "user" ? (
+                  <>
+                    {m.content && <pre className="user-text">{m.content}</pre>}
+                    {m.attachments && m.attachments.length > 0 && (
+                      <div className="att-list">
+                        {m.attachments.map((a, j) => (
+                          <div key={j} className="att-chip">
+                            <span className="att-icon">▤</span>
+                            <span className="att-name">{a.name}</span>
+                            <span className="att-size">{formatBytes(a.size)}{a.truncated ? " · truncated" : ""}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {m.content && <Markdown content={m.content} />}
+                    {m.toolCalls && m.toolCalls.map((tc) => (
+                      <ToolCallCard
+                        key={tc.id}
+                        toolCall={tc}
+                        onApprove={approveCall(i)}
+                        onDeny={denyCall(i)}
+                      />
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {pendingAtts.length > 0 && (
@@ -241,7 +435,14 @@ export default function Chat({ messages, onMessagesChange, sessionName, persona,
       <div className="input-bar">
         <input ref={fileInputRef} type="file" multiple accept={ACCEPT} style={{ display: "none" }} onChange={(e) => handleFiles(e.target.files)} />
         <button className="attach-btn" onClick={() => fileInputRef.current?.click()} disabled={streaming} title="Attach files">+</button>
-        <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={onKey} placeholder="Command... (drag files anywhere)" rows={2} disabled={streaming} />
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKey}
+          placeholder={sessionMode === "agent" ? "State objective for agent... (drag files anywhere)" : "Command... (drag files anywhere)"}
+          rows={2}
+          disabled={streaming}
+        />
         <button onClick={send} disabled={streaming || (!input.trim() && pendingAtts.length === 0)}>
           {streaming ? "..." : "EXEC"}
         </button>

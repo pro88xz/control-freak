@@ -114,6 +114,12 @@ function App() {
     setSessions(prev => prev.map(s => s.personaId === id ? { ...s, personaId: "builtin-default" } : s));
   };
 
+  const toggleSessionMode = () => {
+    if (!active) return;
+    const newMode = active.mode === "agent" ? "chat" : "agent";
+    setSessions(prev => prev.map(s => s.id === active.id ? { ...s, mode: newMode, updatedAt: Date.now() } : s));
+  };
+
   const toggleSidebar = () => setSidebarOpen(v => !v);
 
   if (!active || !activePersona) return null;
@@ -146,8 +152,10 @@ function App() {
           messages={active.messages}
           onMessagesChange={updateActiveMessages}
           sessionName={active.name}
+          sessionMode={active.mode}
           persona={activePersona}
           onOpenPersonas={() => setPersonaPanelOpen(true)}
+          onToggleMode={toggleSessionMode}
         />
       </div>
 

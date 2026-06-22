@@ -12,10 +12,12 @@ export function loadSessions(): Session[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as Session[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(s => ({ ...s, personaId: s.personaId || "builtin-default" }));
-  } catch {
-    return [];
-  }
+    return parsed.map(s => ({
+      ...s,
+      personaId: s.personaId || "builtin-default",
+      mode: s.mode || "chat",
+    }));
+  } catch { return []; }
 }
 
 export function saveSessions(sessions: Session[]) {
@@ -46,9 +48,7 @@ export function loadPersonas(): Persona[] {
     const storedIds = new Set(stored.map(p => p.id));
     const missingBuiltins = BUILTIN_PERSONAS.filter(p => !storedIds.has(p.id));
     return [...stored, ...missingBuiltins];
-  } catch {
-    return BUILTIN_PERSONAS;
-  }
+  } catch { return BUILTIN_PERSONAS; }
 }
 
 export function savePersonas(personas: Persona[]) {
@@ -56,14 +56,15 @@ export function savePersonas(personas: Persona[]) {
   catch (e) { console.error("save personas failed", e); }
 }
 
-export function newSession(name?: string, personaId?: string): Session {
+export function newSession(name?: string, personaId?: string, mode: "chat" | "agent" = "chat"): Session {
   const now = Date.now();
   const ts = new Date(now);
   const pad = (n: number) => String(n).padStart(2, "0");
-  const auto = `Session ${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
+  const auto = `${mode === "agent" ? "Agent" : "Session"} ${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
   return {
     id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
     name: name || auto,
+    mode,
     messages: [],
     personaId: personaId || "builtin-default",
     createdAt: now,
