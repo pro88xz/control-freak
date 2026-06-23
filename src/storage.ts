@@ -1,10 +1,21 @@
-import type { Session, Persona } from "./types";
+import type { Session, Persona, AppSettings } from "./types";
 import { BUILTIN_PERSONAS } from "./personas";
 
 const SESSIONS_KEY = "cf_sessions_v1";
 const ACTIVE_KEY = "cf_active_session_v1";
 const SIDEBAR_KEY = "cf_sidebar_open_v1";
 const PERSONAS_KEY = "cf_personas_v1";
+const SETTINGS_KEY = "cf_settings_v1";
+
+const DEFAULT_SETTINGS: AppSettings = {
+  sshTarget: {
+    label: "Kali (local VM)",
+    host: "127.0.0.1",
+    port: 2222,
+    user: "kali",
+    identityFile: "",
+  },
+};
 
 export function loadSessions(): Session[] {
   try {
@@ -54,6 +65,20 @@ export function loadPersonas(): Persona[] {
 export function savePersonas(personas: Persona[]) {
   try { localStorage.setItem(PERSONAS_KEY, JSON.stringify(personas)); }
   catch (e) { console.error("save personas failed", e); }
+}
+
+export function loadSettings(): AppSettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_SETTINGS, ...parsed, sshTarget: { ...DEFAULT_SETTINGS.sshTarget, ...(parsed.sshTarget || {}) } };
+  } catch { return DEFAULT_SETTINGS; }
+}
+
+export function saveSettings(s: AppSettings) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+  catch (e) { console.error("save settings failed", e); }
 }
 
 export function newSession(name?: string, personaId?: string, mode: "chat" | "agent" = "chat"): Session {

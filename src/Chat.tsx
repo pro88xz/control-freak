@@ -89,11 +89,13 @@ type Props = {
   sessionName: string;
   sessionMode: SessionMode;
   persona: Persona;
+  sshTarget: import("./types").SshTarget;
   onOpenPersonas: () => void;
+  onOpenSettings: () => void;
   onToggleMode: () => void;
 };
 
-export default function Chat({ messages, onMessagesChange, sessionName, sessionMode, persona, onOpenPersonas, onToggleMode }: Props) {
+export default function Chat({ messages, onMessagesChange, sessionName, sessionMode, persona, sshTarget, onOpenPersonas, onOpenSettings, onToggleMode }: Props) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [pendingAtts, setPendingAtts] = useState<Attachment[]>([]);
@@ -294,7 +296,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
 
     const tc = msg.toolCalls[tcIdx];
     const cmd = editedCommand || tc.command;
-    const result = await runShell(cmd, tc.shell, tc.timeoutSec);
+    const result = await runShell(cmd, tc.shell, tc.timeoutSec, sshTarget);
 
     updateTC({
       approvalState: result.exitCode === 0 ? "completed" : "failed",
@@ -391,6 +393,9 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
         <button className="persona-pill" onClick={onOpenPersonas} title="Change persona">
           <span className="pill-dot">●</span> {persona.name}
         </button>
+        <button className="settings-cog" onClick={onOpenSettings} title="Settings (SSH target, etc)">
+          ⚙
+        </button>
         <span className="chat-status">{streaming ? "● transmitting" : "● standby"}</span>
       </div>
 
@@ -400,7 +405,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
         {messages.length === 0 && (
           <div className="empty">
             <div className="empty-title">CONTROL FREAK ONLINE</div>
-            <div className="empty-sub">Brain: Llama 3.3 70B · Mode: {sessionMode.toUpperCase()} · Persona: {persona.name}</div>
+            <div className="empty-sub">Brain: Llama 3.3 70B · Mode: {sessionMode.toUpperCase()} · Persona: {persona.name}{sessionMode === "agent" ? ` · Ops: ${sshTarget.label}` : ""}</div>
             <div className="empty-prompt">
               {sessionMode === "agent" ? "State the objective. Agent will plan and propose commands." : "State the objective. Drop files anywhere."}
             </div>

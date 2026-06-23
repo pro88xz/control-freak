@@ -2,10 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import Sidebar from "./Sidebar";
 import Chat from "./Chat";
 import PersonaPanel from "./PersonaPanel";
-import type { Session, Msg, Persona } from "./types";
+import SettingsPanel from "./SettingsPanel";
+import type { Session, Msg, Persona, AppSettings } from "./types";
+import { testSsh } from "./shellExec";
 import {
   loadSessions, saveSessions, loadActiveId, saveActiveId,
   loadSidebarOpen, saveSidebarOpen, loadPersonas, savePersonas,
+  loadSettings, saveSettings,
   newSession, newPersona,
 } from "./storage";
 import "./App.css";
@@ -17,6 +20,8 @@ function App() {
   const [pendingDelete, setPendingDelete] = useState<Session | null>(null);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [personaPanelOpen, setPersonaPanelOpen] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [settings, setSettings] = useState<AppSettings>({ sshTarget: { label: "Kali (local VM)", host: "127.0.0.1", port: 2222, user: "kali", identityFile: "" } });
   const undoTimerRef = useRef<number | null>(null);
   const hydratedRef = useRef(false);
 
@@ -26,6 +31,7 @@ function App() {
     const open = loadSidebarOpen();
     const ps = loadPersonas();
     setPersonas(ps);
+    setSettings(loadSettings());
 
     if (loaded.length === 0) {
       const fresh = newSession("Default", "builtin-default");
@@ -43,6 +49,7 @@ function App() {
   useEffect(() => { if (hydratedRef.current) saveActiveId(activeId); }, [activeId]);
   useEffect(() => { if (hydratedRef.current) saveSidebarOpen(sidebarOpen); }, [sidebarOpen]);
   useEffect(() => { if (hydratedRef.current) savePersonas(personas); }, [personas]);
+  useEffect(() => { if (hydratedRef.current) saveSettings(settings); }, [settings]);
 
   const active = sessions.find(s => s.id === activeId) || null;
   const activePersona = personas.find(p => p.id === (active?.personaId || "builtin-default")) || personas[0];
@@ -154,10 +161,20 @@ function App() {
           sessionName={active.name}
           sessionMode={active.mode}
           persona={activePersona}
+          sshTarget={settings.sshTarget}
           onOpenPersonas={() => setPersonaPanelOpen(true)}
+          onOpenSettings={() => setSettingsPanelOpen(true)}
           onToggleMode={toggleSessionMode}
         />
       </div>
+
+      <SettingsPanel
+        open={settingsPanelOpen}
+        onClose={() => setSettingsPanelOpen(false)}
+        settings={settings}
+        onSave={setSettings}
+        onTestSsh={testSsh}
+      />
 
       <PersonaPanel
         open={personaPanelOpen}

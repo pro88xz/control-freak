@@ -10,13 +10,15 @@ export type Attachment = {
 export type RiskLevel = "low" | "medium" | "high";
 export type ApprovalState = "pending" | "approved" | "denied" | "edited" | "executing" | "completed" | "failed";
 
+export type ShellKind = "powershell" | "cmd" | "bash" | "ssh-kali";
+
 export type ToolCall = {
   id: string;
   tool: "run_shell";
   command: string;
   reason: string;
   risk: RiskLevel;
-  shell: "powershell" | "cmd" | "bash";
+  shell: ShellKind;
   workingDir?: string;
   timeoutSec: number;
   approvalState: ApprovalState;
@@ -45,6 +47,16 @@ export type Persona = {
   builtin: boolean;
 };
 
+export type SshTarget = {
+  host: string;
+  port: number;
+  user: string;
+  // Path to private key file. If empty, defaults to system default (~/.ssh/id_ed25519 etc).
+  identityFile: string;
+  // Friendly label shown in UI
+  label: string;
+};
+
 export type Session = {
   id: string;
   name: string;
@@ -53,4 +65,8 @@ export type Session = {
   personaId: string;
   createdAt: number;
   updatedAt: number;
+};
+
+export type AppSettings = {
+  sshTarget: SshTarget;
 };
