@@ -105,6 +105,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
   const autoScrollRef = useRef(true);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const recentCommandsRef = useRef<string[]>([]);
 
   useEffect(() => { isTauri().then(setTauriDetected); }, []);
 
@@ -226,8 +227,8 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
     }
 
     const cleanedThink = assistantText.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    const { before, toolCall } = extractToolCall(cleanedThink);
-    const finalVisible = before.trim();
+    const { before, toolCall, corrected } = extractToolCall(cleanedThink);
+    let finalVisible = before.trim();
 
     let parsedTC: ToolCall | null = null;
     if (toolCall && toolCall.command) {
@@ -237,10 +238,24 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
         command: toolCall.command!,
         reason: toolCall.reason || "",
         risk: toolCall.risk || "medium",
-        shell: toolCall.shell || "powershell",
+        shell: toolCall.shell || "ssh-kali",
         timeoutSec: toolCall.timeoutSec || 60,
         approvalState: "pending",
       };
+      if (corrected) {
+        finalVisible = (finalVisible + "\n\n[SHELL_AUTO_CORRECTED] Your shell pick was changed to ssh-kali because the command uses a Kali-only tool.").trim();
+      }
+      // Loop guard: detect if model is repeating the same command
+      const sig = `${parsedTC.shell}::${parsedTC.command}`;
+      const recent = recentCommandsRef.current;
+      if (recent.length >= 2 && recent[recent.length - 1] === sig && recent[recent.length - 2] === sig) {
+        // Three identical proposals in a row — break the loop
+        finalVisible = (finalVisible + "\n\n[LOOP_DETECTED] You proposed the same command 3 times. Stopping the loop. Operator: review the situation and provide new instructions.").trim();
+        parsedTC = null;
+        recentCommandsRef.current = [];
+      } else {
+        recentCommandsRef.current = [...recent.slice(-3), sig];
+      }
     }
 
     return { text: finalVisible, toolCall: parsedTC };
@@ -249,6 +264,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
   const send = async () => {
     const text = input.trim();
     if ((!text && pendingAtts.length === 0) || streaming) return;
+    recentCommandsRef.current = [];
     if (!API_KEY) {
       onMessagesChange([...messages, { role: "user", content: text }, { role: "assistant", content: "[error] VITE_GROQ_API_KEY missing in .env.local — set it and restart." }]);
       setInput(""); return;
