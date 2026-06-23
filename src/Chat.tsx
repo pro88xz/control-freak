@@ -210,6 +210,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
               .replace(/<think>[\s\S]*$/g, "")
               .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
               .replace(/<tool_call>[\s\S]*$/g, "")
+              .replace(/```(?:json|text|)\s*\{[\s\S]*?"tool"[\s\S]*?\}\s*```/g, "")
               .trim();
             if (visible !== lastEmittedVisible) {
               lastEmittedVisible = visible;
