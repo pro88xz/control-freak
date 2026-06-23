@@ -227,7 +227,7 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
     }
 
     const cleanedThink = assistantText.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    const { before, toolCall, corrected } = extractToolCall(cleanedThink);
+    const { before, toolCall, corrected, inferred } = extractToolCall(cleanedThink);
     let finalVisible = before.trim();
 
     let parsedTC: ToolCall | null = null;
@@ -244,6 +244,9 @@ export default function Chat({ messages, onMessagesChange, sessionName, sessionM
       };
       if (corrected) {
         finalVisible = (finalVisible + "\n\n[SHELL_AUTO_CORRECTED] Your shell pick was changed to ssh-kali because the command uses a Kali-only tool.").trim();
+      }
+      if (inferred) {
+        finalVisible = (finalVisible + "\n\n[INFERRED_TOOL_CALL] You wrote a command inline instead of using a tool_call block. The runtime inferred it. Next time, emit the <tool_call> XML block exactly as the system prompt shows.").trim();
       }
       // Loop guard: detect if model is repeating the same command
       const sig = `${parsedTC.shell}::${parsedTC.command}`;
