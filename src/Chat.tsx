@@ -67,15 +67,15 @@ function buildToolResultBlock(tc: ToolCall): string {
   if (tc.approvalState === "denied") {
     return `[TOOL_RESULT: ${tc.id}]\ncommand: ${cmd}\nstatus: DENIED by operator. Do not retry the same command. Adjust your plan.\n[/TOOL_RESULT]`;
   }
-  const truncated = (tc.output || "").length > 8000 ? `${(tc.output || "").slice(0, 8000)}\n...(truncated, total ${(tc.output || "").length} chars)` : (tc.output || "");
+  const truncated = (tc.output || "").length > 4000 ? `${(tc.output || "").slice(0, 4000)}\n...(truncated, total ${(tc.output || "").length} chars)` : (tc.output || "");
   return `[TOOL_RESULT: ${tc.id}]\ncommand: ${cmd}\nexit_code: ${tc.exitCode}\nduration_ms: ${tc.durationMs}\noutput:\n${truncated}\n[/TOOL_RESULT]`;
 }
 
 function trimHistoryForApi(history: import("./types").Msg[]): import("./types").Msg[] {
-  // Keep last ~20 messages. If tool outputs are huge, summarize older ones.
-  if (history.length <= 20) return history;
-  const tail = history.slice(-18);
-  const head = history.slice(0, history.length - 18);
+  // Keep last ~12 messages. Tool outputs balloon TPM fast on free tier.
+  if (history.length <= 12) return history;
+  const tail = history.slice(-10);
+  const head = history.slice(0, history.length - 10);
   const summary: import("./types").Msg = {
     role: "user",
     content: `[CONTEXT SUMMARY] Earlier in this session: ${head.length} messages (${head.filter(m => m.role === "user").length} operator inputs, ${head.filter(m => m.role === "assistant").length} agent responses, ${head.filter(m => m.role === "tool").length} tool results). Continuing from there.`,
